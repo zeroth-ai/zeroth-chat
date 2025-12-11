@@ -39,8 +39,8 @@ export const database = {
   insertMessage: (
     role: 'user' | 'assistant', 
     content: string, 
-    image_base64?: string, 
-    meta_tags?: any
+    image_base64?: string | null,  
+    meta_tags?: any | null
   ) => {
     const stmt = db.prepare(`
       INSERT INTO messages (role, content, image_base64, meta_tags) 
