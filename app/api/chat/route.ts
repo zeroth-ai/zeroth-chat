@@ -1,17 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { describeImage } from '@/lib/gemini';
+import { describeImage } from '@/lib/deepseek';
 import { database } from '@/lib/database';
-import { compressImageToBase64 } from '@/lib/image-utils';
+import { compressImageToBase64, validateImageFile, simpleImageToBase64 } from '@/lib/image-utils';
 
-// Allow larger payloads for images
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-  maxDuration: 30,
-};
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
+  console.log('[API Route] Received image upload request');
+  
   try {
     const formData = await request.formData();
     const image = formData.get('image') as File;
@@ -19,66 +16,70 @@ export async function POST(request: NextRequest) {
     
     // Validate input
     if (!image) {
+      console.log('[API Route] No image provided');
       return NextResponse.json(
-        { error: 'No image provided. Please select an image.' },
+        { 
+          success: false,
+          error: 'No image provided. Please select an image.'
+        },
         { status: 400 }
       );
     }
     
-    // Validate file type
-    if (!image.type.startsWith('image/')) {
-      return NextResponse.json(
-        { error: 'File must be an image (JPEG, PNG, etc.)' },
-        { status: 400 }
-      );
+    // Validate image file
+    const validation = validateImageFile(image);
+    if (!validation.valid) {
+      console.log('[API Route] Image validation failed:', validation.error);
+    } else {
+      console.log('[API Route] Image validation passed');
     }
     
-    // Validate file size (client-side also but double-check)
-    if (image.size > 10 * 1024 * 1024) { // 10MB
-      return NextResponse.json(
-        { error: 'Image too large. Maximum size is 10MB.' },
-        { status: 400 }
-      );
+    console.log(`[API Route] Processing image: ${image.name}`);
+    
+    // Try compression first, fallback to simple conversion if it fails
+    let compressedBase64: string;
+    try {
+      compressedBase64 = await compressImageToBase64(image, 500);
+      console.log('[API Route] Image compressed successfully');
+    } catch (compressError) {
+      console.warn('[API Route] Compression failed, trying simple conversion:', compressError);
+      compressedBase64 = await simpleImageToBase64(image);
+      console.log('[API Route] Used simple base64 conversion');
     }
-    
-    console.log(`Processing image: ${image.name} (${Math.round(image.size / 1024)}KB)`);
-    
-    // Compress image to under 100KB
-    const compressedBase64 = await compressImageToBase64(image, 100);
-    console.log(`Compressed to: ${Math.round(compressedBase64.length * 0.75 / 1024)}KB`);
     
     // Get previous messages for context
     const previousMessages = database.getAllMessages();
+    console.log(`[API Route] Previous messages: ${previousMessages.length}`);
     
     // Store user message in database
     const messageId = database.insertMessage(
       'user',
       message || '[Image uploaded]',
       compressedBase64,
-      null
+      undefined
     );
     
-    console.log(`Stored user message with ID: ${messageId}`);
+    console.log('[API Route] Calling DeepSeek API...');
     
-    // Get description from Gemini
-    console.log('Calling Gemini API...');
+    // Get description from DeepSeek
     const { description, meta_tags } = await describeImage(
       compressedBase64,
       message,
       previousMessages
     );
     
+    console.log(`[API Route] DeepSeek response received: ${description.length} chars`);
+    
     // Store assistant response
     const assistantId = database.insertMessage(
       'assistant',
       description,
-      null,
+      undefined,
       meta_tags
     );
     
-    console.log(`Stored assistant response with ID: ${assistantId}`);
+    console.log('[API Route] Image processed successfully!');
     
-    // Return success response
     return NextResponse.json({
       success: true,
       description,
@@ -86,25 +87,27 @@ export async function POST(request: NextRequest) {
       stats: {
         image_size_kb: Math.round(compressedBase64.length * 0.75 / 1024),
         description_length: description.length,
-        model: 'gemini-pro-vision'
+        model: 'deepseek-chat'
       },
       message_id: assistantId
     });
     
   } catch (error: any) {
-    console.error('API Error:', error);
+    console.error('[API Route] Error:', error.message);
+    console.error('[API Route] Stack:', error.stack);
     
     return NextResponse.json(
       { 
         success: false,
         error: error.message || 'Internal server error',
-        suggestion: 'Check your Gemini API key in .env.local'
+        suggestion: 'Try a different image format (JPEG works best) or reduce the image size.'
       },
       { status: 500 }
     );
   }
 }
 
+// GET endpoint remains the same
 export async function GET() {
   try {
     const messages = database.getAllMessages();
@@ -118,9 +121,9 @@ export async function GET() {
     });
     
   } catch (error: any) {
-    console.error('GET Error:', error);
+    console.error('[API GET] Error:', error);
     return NextResponse.json(
-      { error: error.message },
+      { success: false, error: error.message },
       { status: 500 }
     );
   }
