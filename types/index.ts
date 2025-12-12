@@ -16,14 +16,9 @@ export interface ChatMessage {
     is_urban?: boolean;
     is_indoor?: boolean;
     is_art?: boolean;
-    is_photo?: boolean;
     colors?: string[];
     mood?: string[];
     time_of_day?: string;
     word_count?: number;
-    has_emojis?: boolean;
-    is_modern?: boolean;
-    is_vintage?: boolean;
-    is_abstract?: boolean;
     [key: string]: any;
   }
