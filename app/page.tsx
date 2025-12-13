@@ -1,197 +1,177 @@
 'use client';
-
 import { useState, useEffect, useRef } from 'react';
-import Chat from '@/components/Chat';
-import type { ChatMessage } from '@/types';
+import { v4 as uuidv4 } from 'uuid';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+  imageUrl?: string;
+  metaTags?: string;
+}
 
 export default function Home() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const [image, setImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [image, setImage] = useState<File | null>(null);
+  const [sessionId, setSessionId] = useState('');
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Load messages on component mount
+  // 1. Initialize Session
   useEffect(() => {
-    loadMessages();
+    let id = localStorage.getItem('chat_session_id');
+    if (!id) {
+      id = uuidv4();
+      localStorage.setItem('chat_session_id', id);
+    }
+    setSessionId(id);
+
+    // Load History
+    fetch(`/api/chat?sessionId=${id}`)
+      .then(res => res.json())
+      .then(data => setMessages(data));
   }, []);
 
-  const loadMessages = async () => {
-    try {
-      const saved = localStorage.getItem('ai-image-chat-messages');
-      if (saved) {
-        setMessages(JSON.parse(saved));
-      }
-
-      const response = await fetch('/api/chat');
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success && data.messages && data.messages.length > 0) {
-          setMessages(data.messages);
-          localStorage.setItem('ai-image-chat-messages', JSON.stringify(data.messages));
-        }
-      }
-    } catch (error) {
-      console.error('Failed to load messages:', error);
-    }
-  };
-
+  // 2. Auto scroll
   useEffect(() => {
-    if (messages.length > 0) {
-      localStorage.setItem('ai-image-chat-messages', JSON.stringify(messages));
-    }
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading]);
-
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      
-      if (file.size > 10 * 1024 * 1024) {
-        alert('Image too large. Please select an image under 10MB.');
-        return;
-      }
-      
-      if (!file.type.startsWith('image/')) {
-        alert('Please select an image file (JPEG, PNG, etc.)');
-        return;
-      }
-      
-      setImage(file);
-      
-      if (!input.trim()) {
-        setInput('Describe this image in detail');
-      }
+  // 3. Handle Image Selection
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => setImage(reader.result as string);
+      reader.readAsDataURL(file);
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if ((!input.trim() && !image) || loading) {
-      return;
-    }
+  // 4. Send Message
+  const sendMessage = async () => {
+    if ((!input.trim() && !image) || loading) return;
 
-    const userMessage: ChatMessage = {
-      id: Date.now(),
-      role: 'user',
-      content: input || (image ? '[Image uploaded]' : ''),
-      image_base64: image ? 'placeholder' : undefined,
-      created_at: new Date().toISOString(),
-    };
-    
-    setMessages(prev => [...prev, userMessage]);
+    const newMessage: Message = { role: 'user', content: input, imageUrl: image || undefined };
+    setMessages(prev => [...prev, newMessage]);
     setLoading(true);
-
-    const formData = new FormData();
-    if (image) {
-      formData.append('image', image);
-    }
-    formData.append('message', input);
+    setInput('');
+    setImage(null);
 
     try {
-      const response = await fetch('/api/chat', {
+      const res = await fetch('/api/chat', {
         method: 'POST',
-        body: formData,
+        body: JSON.stringify({ 
+          sessionId, 
+          message: newMessage.content, 
+          imageBase64: newMessage.imageUrl 
+        }),
       });
-
-      const data = await response.json();
-      
-      if (data.success) {
-        const assistantMessage: ChatMessage = {
-          id: Date.now() + 1,
-          role: 'assistant',
-          content: data.description,
-          meta_tags: data.meta_tags,
-          created_at: new Date().toISOString(),
-        };
-        
-        setMessages(prev => [...prev, assistantMessage]);
-        
-        setTimeout(() => {
-          loadMessages();
-        }, 100);
-        
-      } else {
-        alert(`Error: ${data.error}`);
-      }
-    } catch (error: any) {
-      console.error('Error:', error);
-      alert(`Failed to get response: ${error.message}`);
+      const data = await res.json();
+      setMessages(prev => [...prev, data]);
+    } catch (err) {
+      console.error(err);
+      alert("Error sending message");
     } finally {
       setLoading(false);
-      setInput('');
-      setImage(null);
     }
   };
 
   return (
-    <div style={styles.container}>
-      <div style={styles.header}>
-        <h1 style={styles.title}>AI Image Description Chat</h1>
-        <p style={styles.subtitle}>Upload any image and get detailed AI analysis</p>
-
+    <div className="flex flex-col h-screen bg-gray-950 text-gray-100 max-w-4xl mx-auto border-x border-gray-800 font-sans">
+      
+      {/* Header */}
+      <div className="p-4 border-b border-gray-800 bg-gray-900 flex justify-between items-center sticky top-0 z-10">
+        <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+          Ai Chat
+        </h1>
       </div>
 
-      <Chat 
-        messages={messages}
-        loading={loading}
-        input={input}
-        setInput={setInput}
-        image={image}
-        setImage={setImage}
-        handleImageChange={handleImageChange}
-        handleSubmit={handleSubmit}
-      />
-      
-      <div ref={messagesEndRef} />
-      
-      <footer style={styles.footer}>
-        <p>All images are compressed to under 100KB and stored locally in your browser</p>
-        <p style={{ marginTop: '4px' }}>Chat history is saved in both localStorage and SQLite database</p>
-      </footer>
+      {/* Chat Area */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        {messages.map((msg, idx) => (
+          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[85%] p-4 rounded-2xl shadow-lg ${
+              msg.role === 'user' 
+                ? 'bg-blue-600 text-white rounded-br-none' 
+                : 'bg-gray-800 text-gray-100 rounded-bl-none border border-gray-700'
+            }`}>
+              
+              {/* Image Preview in Chat */}
+              {msg.imageUrl && (
+                <div className="mb-3">
+                  <img src={msg.imageUrl} alt="Upload" className="max-h-64 rounded-lg border border-white/20" />
+                </div>
+              )}
+
+              {/* Message Content (Markdown) */}
+              <div className="prose prose-invert prose-sm leading-relaxed">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+              </div>
+
+              {/* Meta Tags Badge */}
+              {msg.metaTags && (
+                <div className="mt-4 pt-3 border-t border-gray-600/50 flex flex-wrap gap-2">
+                  {msg.metaTags.split(',').map((tag, tIdx) => (
+                    <span key={tIdx} className="text-xs font-mono bg-gray-900 text-orange-400 px-2 py-1 rounded border border-gray-700">
+                      #{tag.trim()}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="flex justify-start animate-pulse">
+            <div className="bg-gray-800 px-4 py-2 rounded-full text-sm text-gray-400 border border-gray-700">
+              AI is analyzing image...
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input Area */}
+      <div className="p-4 bg-gray-900 border-t border-gray-800">
+        {/* Selected Image Preview */}
+        {image && (
+          <div className="mb-3 relative w-fit group">
+            <img src={image} className="h-24 rounded-lg border border-gray-600 shadow-lg" />
+            <button 
+              onClick={() => setImage(null)} 
+              className="absolute -top-2 -right-2 bg-red-500 hover:bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs shadow-md transition"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        
+        <div className="flex gap-3">
+          <label className="cursor-pointer p-3 bg-gray-800 hover:bg-gray-700 rounded-xl border border-gray-700 transition flex items-center justify-center">
+            <span className="text-xl">📷</span>
+            <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+          </label>
+          
+          <input
+            className="flex-1 bg-gray-950 border border-gray-700 rounded-xl px-4 text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition placeholder-gray-600"
+            placeholder="Upload an image or ask a question..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+          />
+          
+          <button 
+            onClick={sendMessage}
+            disabled={loading}
+            className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg shadow-blue-900/20"
+          >
+            Send
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
-
-const styles = {
-  container: {
-    minHeight: '100vh',
-    background: 'linear-gradient(135deg, #0d1117 0%, #161b22 100%)',
-    color: '#c9d1d9',
-    padding: '16px',
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-  },
-  header: {
-    textAlign: 'center' as const,
-    padding: '32px 0',
-    maxWidth: '1200px',
-    margin: '0 auto'
-  },
-  title: {
-    fontSize: '40px',
-    fontWeight: 'bold' as const,
-    marginBottom: '8px',
-    color: '#f0f6fc'
-  },
-  subtitle: {
-    color: '#8b949e',
-    fontSize: '18px',
-    marginBottom: '8px'
-  },
-  tagline: {
-    color: '#484f58',
-    fontSize: '14px'
-  },
-  footer: {
-    marginTop: '32px',
-    textAlign: 'center' as const,
-    color: '#6e7681',
-    fontSize: '14px',
-    maxWidth: '1200px',
-    margin: '32px auto 0'
-  }
-};

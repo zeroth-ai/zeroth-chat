@@ -1,0 +1,31 @@
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ChatSession {
+  id        String    @id
+  createdAt DateTime  @default(now())
+  messages  Message[]
+}
+
+model Message {
+  id        String      @id @default(uuid())
+  role      String      // 'user' or 'assistant'
+  content   String      
+  
+  // This stores the Base64 image string.
+  // @db.Text allows large strings (Postgres supports up to 1GB here).
+  imageUrl  String?     @db.Text 
+  
+  metaTags  String?
+  createdAt DateTime    @default(now())
+  
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id])
+}

@@ -1,130 +1,122 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { describeImage } from '@/lib/deepseek';
-import { database } from '@/lib/database';
-import { compressImageToBase64, validateImageFile, simpleImageToBase64 } from '@/lib/image-utils';
+import { PrismaClient } from '@prisma/client';
 
-export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// Prevent multiple DB connections
+const globalForPrisma = global as unknown as { prisma: PrismaClient };
+const prisma = globalForPrisma.prisma || new PrismaClient();
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 
-export async function POST(request: NextRequest) {
-  console.log('[API Route] Received image upload request');
-  
+export async function POST(req: NextRequest) {
   try {
-    const formData = await request.formData();
-    const image = formData.get('image') as File;
-    const message = formData.get('message') as string || '';
-    
-    // Validate input
-    if (!image) {
-      console.log('[API Route] No image provided');
-      return NextResponse.json(
-        { 
-          success: false,
-          error: 'No image provided. Please select an image.'
-        },
-        { status: 400 }
-      );
-    }
-    
-    // Validate image file
-    const validation = validateImageFile(image);
-    if (!validation.valid) {
-      console.log('[API Route] Image validation failed:', validation.error);
-    } else {
-      console.log('[API Route] Image validation passed');
-    }
-    
-    console.log(`[API Route] Processing image: ${image.name}`);
-    
-    // Try compression first, fallback to simple conversion if it fails
-    let compressedBase64: string;
-    try {
-      compressedBase64 = await compressImageToBase64(image, 500);
-      console.log('[API Route] Image compressed successfully');
-    } catch (compressError) {
-      console.warn('[API Route] Compression failed, trying simple conversion:', compressError);
-      compressedBase64 = await simpleImageToBase64(image);
-      console.log('[API Route] Used simple base64 conversion');
-    }
-    
-    // Get previous messages for context
-    const previousMessages = database.getAllMessages();
-    console.log(`[API Route] Previous messages: ${previousMessages.length}`);
-    
-    // Store user message in database
-    const messageId = database.insertMessage(
-      'user',
-      message || '[Image uploaded]',
-      compressedBase64,
-      undefined
-    );
-    
-    console.log('[API Route] Calling DeepSeek API...');
-    
-    // Get description from DeepSeek
-    const { description, meta_tags } = await describeImage(
-      compressedBase64,
-      message,
-      previousMessages
-    );
-    
-    console.log(`[API Route] DeepSeek response received: ${description.length} chars`);
-    
-    // Store assistant response
-    const assistantId = database.insertMessage(
-      'assistant',
-      description,
-      undefined,
-      meta_tags
-    );
-    
-    console.log('[API Route] Image processed successfully!');
-    
-    return NextResponse.json({
-      success: true,
-      description,
-      meta_tags,
-      stats: {
-        image_size_kb: Math.round(compressedBase64.length * 0.75 / 1024),
-        description_length: description.length,
-        model: 'deepseek-chat'
-      },
-      message_id: assistantId
+    const { sessionId, message, imageBase64 } = await req.json();
+
+    if (!sessionId) return NextResponse.json({ error: 'Session ID required' }, { status: 400 });
+
+    // 1. Save User Message
+    await prisma.chatSession.upsert({
+      where: { id: sessionId },
+      update: {},
+      create: { id: sessionId },
     });
-    
-  } catch (error: any) {
-    console.error('[API Route] Error:', error.message);
-    console.error('[API Route] Stack:', error.stack);
-    
-    return NextResponse.json(
-      { 
-        success: false,
-        error: error.message || 'Internal server error',
-        suggestion: 'Try a different image format (JPEG works best) or reduce the image size.'
+
+    await prisma.message.create({
+      data: {
+        sessionId,
+        role: 'user',
+        content: message || '',
+        imageUrl: imageBase64 || null,
       },
-      { status: 500 }
-    );
+    });
+
+    // 2. AI Logic (Pollinations.ai)
+    let aiResponseText = "";
+    let extractedTags = "";
+
+    try {
+      // Construct the message payload 
+      const messages: any[] = [
+        { 
+          role: "system", 
+          content: "You are a helpful image analyst. Describe images in Markdown. Always end your response with a list of 5 tags in this format: 'TAGS: tag1, tag2, tag3'." 
+        }
+      ];
+
+      if (imageBase64) {
+        // Image Mode
+        messages.push({
+          role: "user",
+          content: [
+            { type: "text", text: message || "Describe this image detailedly." },
+            { 
+              type: "image_url", 
+              image_url: { 
+                url: imageBase64 // Passes the full data URI
+              } 
+            }
+          ]
+        });
+      } else {
+        // Text Only Mode
+        messages.push({ role: "user", content: message });
+      }
+
+      // Call Pollinations 
+      const response = await fetch('https://text.pollinations.ai/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: messages,
+          model: 'openai', // Automatically uses GPT-4o or similar vision models
+          jsonMode: false
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Pollinations API Error: ${response.status} ${response.statusText}`);
+      }
+      
+      const text = await response.text(); // Response is raw text
+      
+      // Parse Tags, not really needed but is proided by the fine grained token so why not lol
+      if (text.includes("TAGS:")) {
+        const parts = text.split("TAGS:");
+        aiResponseText = parts[0].trim();
+        extractedTags = parts[1].trim();
+      } else {
+        aiResponseText = text;
+      }
+
+    } catch (aiError: any) {
+      console.error("AI Service Error:", aiError);
+      aiResponseText = `⚠️ Service Error: ${aiError.message}. (Try a smaller image or shorter prompt).`;
+    }
+
+    // 3. Save AI Response
+    const aiMessage = await prisma.message.create({
+      data: {
+        sessionId,
+        role: 'assistant', // Only two roles are defined the user and the assistant
+        content: aiResponseText,
+        metaTags: extractedTags,
+      },
+    });
+
+    return NextResponse.json(aiMessage);
+
+  } catch (error) {
+    console.error("Server Error:", error);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
 
-// GET endpoint remains the same
-export async function GET() {
-  try {
-    const messages = database.getAllMessages();
-    const stats = database.getStats();
-    
-    return NextResponse.json({
-      success: true,
-      messages,
-      stats,
-      count: messages.length
-    });
-    
-  } catch (error: any) {
-    console.error('[API GET] Error:', error);
-    return NextResponse.json(
-      { success: false, error: error.message },
-      { status: 500 }
-    );
-  }
+// GET Route
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const sessionId = searchParams.get('sessionId');
+  if (!sessionId) return NextResponse.json([]);
+  const messages = await prisma.message.findMany({
+    where: { sessionId },
+    orderBy: { createdAt: 'asc' },
+  });
+  return NextResponse.json(messages);
 }
