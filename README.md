@@ -28,4 +28,44 @@ This is a full-stack chat application that uses AI to analyze and describe image
 
 4. Sync the database schema:
 `npx prisma db push`.
-5 Run the development server: `npm run dev`.
+
+5. Run the development server: `npm run dev`.
+
+### Testing via CLI (Curl)
+
+You can verify the API is working without using the frontend by running these commands in your terminal.
+
+1. Test Image Analysis
+
+Create a file named `test-payload.json` containing a test session ID and a tiny Base64 image (a red dot):
+
+```json
+{
+  "sessionId": "curl-test-session-1",
+  "message": "What color is this?",
+  "imageBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg=="
+}
+```
+
+
+Run the curl command to send this file to your local API:
+
+```bash
+curl -X POST http://localhost:3000/api/chat \
+  -H "Content-Type: application/json" \
+  -d @test-payload.json
+
+```
+
+Expected Output: The AI should reply identifying the image as a "red dot" or "red square".
+
+
+2. Verify Chat History (GET)
+
+Check if the database successfully saved your conversation by retrieving the history for that session:
+
+```bash
+curl "http://localhost:3000/api/chat?sessionId=curl-test-session-1"
+```
+
+Expected Output: A JSON array [...] containing the user message and the AI's response from the previous test.
