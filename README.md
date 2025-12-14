@@ -24,7 +24,7 @@ This is a full-stack chat application that uses AI to analyze and describe image
    ```bash
    npm install
 
-3. Set up your environment variables in `.env` (requires a `DATABASE_URL` from Supabase).
+3. Set up your environment variables in `.env` (requires a `DATABASE_URL` from Supabase and the hugging face api token, you can also replace it with some other api token of your prefered model). You can also check the `.env.example`  file for reference
 
 4. Sync the database schema:
 `npx prisma db push`.
