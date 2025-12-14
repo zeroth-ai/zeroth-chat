@@ -1,0 +1,4 @@
+# Ignore Prisma engine files in build cache
+.prisma
+node_modules/.prisma
+node_modules/@prisma/engines

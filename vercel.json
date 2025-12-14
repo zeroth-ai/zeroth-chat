@@ -1,0 +1,10 @@
+{
+    "build": {
+      "env": {
+        "PRISMA_GENERATE_DATAPROXY": "false"
+      }
+    },
+    "installCommand": "npm install",
+    "buildCommand": "npm run vercel-build",
+    "outputDirectory": ".next"
+  }
